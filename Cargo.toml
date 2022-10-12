@@ -1,0 +1,16 @@
+[package]
+name = "os"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["limine"]
+
+[dependencies]
+cfg-if = "1.0.0"
+const_format = "0.2.26"
+itertools = { version = "0.10.3", default-features = false }
+lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
+limine = { version = "0.1.8", optional = true }
+spin = "0.9.4"
+static_assertions = "1.1.0"
