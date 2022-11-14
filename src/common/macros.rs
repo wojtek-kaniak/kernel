@@ -1,3 +1,10 @@
+macro_rules! include_data_bytes {
+    ($path:literal) => {
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/", $path))
+    };
+}
+pub(crate) use include_data_bytes;
+
 macro_rules! function_name {
     () => {{
         #[allow(dead_code)]
@@ -42,39 +49,65 @@ macro_rules! debug_asserts {
 }
 pub(crate) use debug_asserts;
 
+macro_rules! assert_arg {
+    ($arg:ident, $expr:expr) => {
+        if !($expr) {
+            $crate::common::macros::invalid_arg!($arg);
+        }
+    };
+    ($arg:ident, $expr:expr, $message:expr) => {
+        if !($expr) {
+            $crate::common::macros::invalid_arg!($arg, $message);
+        }
+    };
+}
+pub(crate) use assert_arg;
+
 macro_rules! debug_assert_arg {
     ($arg:ident, $expr:expr) => {
         $crate::common::macros::debug_asserts!({
-            if !($expr) {
-                $crate::common::macros::invalid_arg!($arg);
-            }
+            $crate::common::macros::assert_arg!($arg, $expr);
         })
     };
     ($arg:ident, $expr:expr, $message:expr) => {
         $crate::common::macros::debug_asserts!({
-            if !($expr) {
-                $crate::common::macros::invalid_arg!($arg, $message);
-            }
+            $crate::common::macros::assert_arg!($arg, $expr, $message);
         })
     };
 }
 pub(crate) use debug_assert_arg;
 
+/// Prevents creating tokens safely
+#[derive(Clone, Copy)]
+pub struct InnerToken {
+    _private: ()
+}
+
+impl InnerToken {
+    pub const unsafe fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
 macro_rules! token_type {
     ($type:ident) => {
         #[derive(Clone, Copy)]
-        pub struct $type;
+        pub struct $type {
+            _inner: crate::common::macros::InnerToken
+        }
 
         impl $type {
             pub const unsafe fn new() -> Self {
-                $type
+                unsafe {
+                    $type { _inner: crate::common::macros::InnerToken::new() }
+                }
             }
         }
     };
 }
 pub(crate) use token_type;
 
-macro_rules! token_from_unsafe {
+macro_rules! token_from {
     ($from:ty, $to:ty) => {
         impl ::core::convert::From<$from> for $to {
             fn from(token: $from) -> Self {
@@ -84,4 +117,4 @@ macro_rules! token_from_unsafe {
         }
     };
 }
-pub(crate) use token_from_unsafe;
+pub(crate) use token_from;

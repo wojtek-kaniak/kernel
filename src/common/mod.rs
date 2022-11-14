@@ -2,6 +2,7 @@ use core::fmt::{Debug, LowerHex};
 
 pub mod collections;
 pub mod macros;
+pub mod mem;
 pub mod random;
 pub mod sync;
 pub mod time;

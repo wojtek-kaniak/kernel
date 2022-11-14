@@ -2,24 +2,45 @@ use core::{cell::{UnsafeCell, SyncUnsafeCell}, mem::MaybeUninit, sync::atomic::{
 
 pub struct InitOnce<T> {
     data: SyncUnsafeCell<MaybeUninit<T>>,
-    initialized: AtomicBool
+    initialized: AtomicBool,
+    lock: AtomicBool
 }
 
 impl<T> InitOnce<T> {
     pub const fn new() -> Self {
         Self {
             data: SyncUnsafeCell::new(MaybeUninit::uninit()),
-            initialized: AtomicBool::new(false)
+            initialized: AtomicBool::new(false),
+            lock: AtomicBool::new(false)
         }
     }
 
     pub fn initialize(&self, value: T) -> Result<(), &T> {
-        match self.initialized.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst) {
+        match self.lock.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(_) => {
                 unsafe {
                     let mut_ref = self.data.get().as_mut().unwrap_unchecked();
                     *mut_ref = MaybeUninit::new(value);
                 }
+                self.initialized.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            Err(_) => {
+                unsafe {
+                    Err(self.get_unchecked())
+                }
+            }
+        }
+    }
+
+    pub fn initialize_with(&self, func: impl FnOnce() -> T) -> Result<(), &T> {
+        match self.lock.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => {
+                unsafe {
+                    let mut_ref = self.data.get().as_mut().unwrap_unchecked();
+                    *mut_ref = MaybeUninit::new(func());
+                }
+                self.initialized.store(true, Ordering::SeqCst);
                 Ok(())
             },
             Err(_) => {
@@ -43,6 +64,10 @@ impl<T> InitOnce<T> {
         unsafe {
             self.data.get().as_ref().unwrap_unchecked().assume_init_ref()
         }
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.initialized.load(Ordering::SeqCst)
     }
 }
 

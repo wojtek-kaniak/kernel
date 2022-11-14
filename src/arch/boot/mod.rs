@@ -1,17 +1,32 @@
 use core::fmt::{Debug, Display, Write};
+use crate::{common::{macros::{debug_assert_arg, assert_arg}, time::UnixEpochTime}, arch::{PhysicalAddress, VirtualAddress}};
 
-use itertools::Itertools;
+use self::logo::LogoScreen;
 
-use crate::{common::{macros::debug_assert_arg, time::UnixEpochTime}, arch::PhysicalAddress};
+use super::{devices::framebuffer::{FramebufferInfo, FramebufferList, RawFramebuffer, Framebuffer}, intrinsics::halt};
+
+mod logo;
 
 #[cfg(all(target_arch = "x86_64", feature = "limine"))]
-pub mod x86_64_limine;
+mod x86_64_limine;
 
 pub static mut BOOT_TERMINAL_WRITER: Option<BootTerminalWriter> = Option::None;
 
 pub fn main(data: BootData) -> ! {
     initialize_terminal(data.terminal_writer);
-    crate::allocator::physical::initialize(data.memory_map);
+
+    // TODO: initialize arch::devices::framebuffer instead
+    let framebuffer = data.framebuffers.entries.first().map(|&fb| unsafe { RawFramebuffer::new(fb).ok() }).flatten();
+    if let Some(framebuffer) = framebuffer {
+        LogoScreen::new(Framebuffer::new(&framebuffer));
+    }
+
+    let identity_map_token = crate::arch::paging::initialize_identity_map(data.identity_map_base);
+    // TODO: fix memory map loading
+    halt();
+    unsafe {
+        crate::allocator::physical::initialize(data.memory_map, identity_map_token);
+    }
     
     todo!()
     //unreachable!();
@@ -25,11 +40,12 @@ fn initialize_terminal(writer: BootTerminalWriter) {
 pub struct BootData {
     pub bootloader_info: BootloaderInfo,
     pub memory_map: MemoryMap,
-    pub direct_map_base: PhysicalAddress,
+    pub identity_map_base: PhysicalAddress,
     pub framebuffers: FramebufferList,
     pub terminal_writer: BootTerminalWriter,
     /// Unix epoch time on boot
     pub boot_time: UnixEpochTime,
+    pub kernel_address: (PhysicalAddress, VirtualAddress),
 }
 
 #[derive(Clone, Copy)]
@@ -83,8 +99,14 @@ pub struct MemoryMap {
 }
 
 impl MemoryMap {
-    pub fn new(entries: &'static [MemoryMapEntry]) -> Self {
-        debug_assert_arg!(
+    /// All entries must be sorted by base \
+    /// `entries.len()` must be greater than 0
+    /// All entries must be valid, all `MemoryMapEntryKind::Usable` entries must be usable
+    pub unsafe fn new(entries: &'static [MemoryMapEntry]) -> Self {
+        #[cfg(debug_assertions)]
+        use itertools::Itertools;
+
+        assert_arg!(
             entries,
             entries.len() > 0,
             "Memory map contains no elements"
@@ -100,7 +122,7 @@ impl MemoryMap {
                 .iter()
                 .filter(|x| x.kind == MemoryMapEntryKind::Usable)
                 .tuple_windows()
-                .any(|(prev, next)| prev.base + prev.len > next.base),
+                .all(|(prev, next)| prev.base + prev.len <= next.base),
             "Usable memory map entries overlapping"
         );
 
@@ -121,21 +143,22 @@ impl IntoIterator for MemoryMap {
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryMapEntry {
     /// Base physical address
-    pub base: usize,
+    pub base: PhysicalAddress,
     pub len: usize,
     pub kind: MemoryMapEntryKind,
 }
 
 impl MemoryMapEntry {
-    pub fn new(base: usize, len: usize, kind: MemoryMapEntryKind) -> Self {
+    pub fn new(base: PhysicalAddress, len: usize, kind: MemoryMapEntryKind) -> Self {
         MemoryMapEntry { base, len, kind }
     }
 
-    pub fn end(self) -> usize {
+    pub fn end(self) -> PhysicalAddress {
         self.base + self.len
     }
 }
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryMapEntryKind {
     Usable,
@@ -143,33 +166,11 @@ pub enum MemoryMapEntryKind {
     Reserved,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct FramebufferList {
-    pub entries: &'static [FramebufferInfo],
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct FramebufferInfo {
-    /// Linear framebuffer (virtual) address
-    pub address: usize,
-    /// Bits per pixel
-    pub bpp: u8,
-    pub red_mask: u8,
-    pub red_shift: u8,
-    pub green_mask: u8,
-    pub green_shift: u8,
-    pub blue_mask: u8,
-    pub blue_shift: u8,
-    pub width: usize,
-    pub height: usize,
-    pub pitch: usize,
-}
-
 // TODO: refactor into generic logger with fb/serial/etc. support
 #[macro_export]
 macro_rules! boot_print {
     ($($arg:tt)*) => (_ = core::fmt::Write::write_fmt(
-        unsafe { crate::boot::BOOT_TERMINAL_WRITER }.as_mut().expect("Boot terminal unavailable"), format_args!($($arg)*)
+        unsafe { crate::arch::boot::BOOT_TERMINAL_WRITER }.as_mut().expect("Boot terminal unavailable"), format_args!($($arg)*)
     ));
 }
 

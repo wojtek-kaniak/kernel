@@ -5,13 +5,13 @@ use crate::{
     arch::intrinsics::time_stamp_counter
 };
 
-static WEAK_RNG: InitOnce<XorShiftStar> = InitOnce::new();
+static WEAK_RNG: InitOnce<XorshiftStar> = InitOnce::new();
 
 /// This function may be only called once
 pub fn weak_initialize(time: UnixEpochTime) {
     let mut seed: u64 = time.into();
     seed ^= time_stamp_counter();
-    let rng = XorShiftStar::new(seed);
+    let rng = XorshiftStar::new(seed);
     let result = WEAK_RNG.initialize(rng);
     debug_assert!(result.is_ok());
 }
@@ -21,10 +21,10 @@ pub fn weak() -> WeakRng {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct WeakRng(&'static XorShiftStar);
+pub struct WeakRng(&'static XorshiftStar);
 
 impl WeakRng {
-    fn new(rng: &'static XorShiftStar) -> Self {
+    fn new(rng: &'static XorshiftStar) -> Self {
         WeakRng(rng)
     }
 
@@ -46,9 +46,9 @@ impl WeakRng {
 
 /// Xorshift*
 #[derive(Debug)]
-struct XorShiftStar(AtomicU64);
+struct XorshiftStar(AtomicU64);
 
-impl XorShiftStar {
+impl XorshiftStar {
     const M: u64 = 0x2545f4914f6cdd1d;
 
     pub fn new(seed: u64) -> Self {

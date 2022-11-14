@@ -4,5 +4,8 @@ build-std-features = ["compiler-builtins-mem"]
 
 [build]
 target = "build/x86-64_kernel.json"
-rustflags = ["-C", "link-args=-T build/x86-64_limine.ld"]
+rustflags = ["-C", "link-args=-T build/x86-64_limine.ld --fatal-warnings"]
+
+[target.'cfg(target_os = "none")']
+runner = "build/runner.ps1"
 # rustflags = ["-C", "link-args=-E", "-C", "link-args=-T build/x86-64_limine.ld"]

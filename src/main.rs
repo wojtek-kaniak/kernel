@@ -10,11 +10,12 @@
 #![feature(is_sorted)]
 #![feature(atomic_mut_ptr)]
 #![feature(sync_unsafe_cell)]
+#![feature(pointer_is_aligned)]
+#![feature(naked_functions)]
 
-pub mod common;
-pub mod boot;
-pub mod arch;
 pub mod allocator;
+pub mod arch;
+pub mod common;
 
 use core::{panic::PanicInfo, arch::asm};
 
@@ -33,7 +34,7 @@ fn panic_handler(_info: &PanicInfo) -> ! {
         unsafe {
             asm!(
                 "cli",
-                "hlt"
+                "hlt",
             );
         }
     }

@@ -49,9 +49,10 @@ impl<T, const MAX_SIZE: usize> FixedSizeVec<T, MAX_SIZE> {
         }
     }
 
+    /// index must be less than the len
     pub unsafe fn get_unchecked(&self, index: usize) -> &T {
         unsafe {
-            &self.data.get_unchecked(index).assume_init_ref()
+            self.data.get_unchecked(index).assume_init_ref()
         }
     }
 
@@ -62,7 +63,8 @@ impl<T, const MAX_SIZE: usize> FixedSizeVec<T, MAX_SIZE> {
         }
     }
 
-    /// This function can be used to initialize elements without causing UB
+    /// This function can be used to initialize elements without causing UB \
+    /// Destructor is not called on the previous value
     pub unsafe fn set_unchecked(&mut self, index: usize, value: T) {
         unsafe {
             *self.data.get_unchecked_mut(index) = MaybeUninit::new(value);
@@ -82,15 +84,30 @@ impl<T, const MAX_SIZE: usize> FixedSizeVec<T, MAX_SIZE> {
         }
     }
 
-    pub fn pop(&mut self) -> Option<&T> {
+    pub fn pop(&mut self) -> Option<T> {
         if self.len() == 0 {
             None
         } else {
             unsafe {
                 let old_len = self.len();
                 self.set_len(old_len - 1);
-                Some(self.get_unchecked(old_len - 1))
+                Some(self.data.get_unchecked(old_len - 1).assume_init_read())
             }
+        }
+    }
+
+    pub fn insert(&mut self, index: usize, value: T) -> Result<(), ()> {
+        if index > self.len() {
+            panic!("index out of bounds: the len is {} but the index is {}", self.len(), index);
+        } else if index > MAX_SIZE - 1 {
+            return Err(())
+        } else {
+            unsafe {
+                let start = self.data.as_mut_ptr().add(index);
+                core::ptr::copy(start, start.add(1), self.len() - index);
+                self.set_unchecked(index, value);
+            }
+            Ok(())
         }
     }
 
@@ -167,6 +184,28 @@ impl<T, const MAX_SIZE: usize> IndexMut<usize> for FixedSizeVec<T, MAX_SIZE> {
 
         unsafe {
             self.data.get_unchecked_mut(index).assume_init_mut()
+        }
+    }
+}
+
+impl<'a, T, const MAX_SIZE: usize> IntoIterator for &'a FixedSizeVec<T, MAX_SIZE> {
+    type Item = &'a T;
+
+    type IntoIter = core::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        unsafe {
+            MaybeUninit::slice_assume_init_ref(&self.data.get_unchecked(..self.len())).into_iter()
+        }
+    }
+}
+
+impl<T, const MAX_SIZE: usize> Drop for FixedSizeVec<T, MAX_SIZE> {
+    fn drop(&mut self) {
+        for i in 0..self.len() {
+            unsafe {
+                self.data.get_unchecked_mut(i).assume_init_drop();
+            }
         }
     }
 }

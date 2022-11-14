@@ -1,62 +1,77 @@
-// TODO: physical page allocator
+// TODO: DMA support
 
-use core::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
+use core::{sync::atomic::{AtomicUsize, Ordering}, slice};
 
 use crate::{
-    boot,
-    arch::{paging::{self, IdentityMapToken}, PhysicalAddress, intrinsics::atomic_bit_test_set},
-    common::{macros::{debug_assert_arg, token_type}, collections::FixedSizeVec}
+    arch::{boot::{self, MemoryMapEntryKind}, paging::{self, IdentityMapToken}, PhysicalAddress, intrinsics::atomic_bit_test_set},
+    common::{macros::{debug_assert_arg, token_type, assert_arg}, collections::FixedSizeVec, sync::InitOnce}
 };
 
 pub const FRAME_SIZE: usize = paging::PAGE_SIZE;
 pub const MAX_MEMORY_REGION_COUNT: usize = 4096;
 
 // Initialized once, frequently read
-static mut ALLOCATOR: Option<FrameAllocator> = None;
-static ALLOCATOR_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static ALLOCATOR: InitOnce<FrameAllocator> = InitOnce::new();
 
 token_type!(FrameAllocatorToken);
 
 pub fn global_allocator(#[allow(unused_variables)] token: FrameAllocatorToken) -> &'static FrameAllocator {
     unsafe {
-        debug_assert!(ALLOCATOR.is_some());
-        ALLOCATOR.as_ref().unwrap_unchecked()
+        debug_assert!(ALLOCATOR.is_initialized());
+        ALLOCATOR.get_unchecked()
     }
 }
 
-/// This function may only be called once
-pub fn initialize(memory_map: boot::MemoryMap) -> FrameAllocatorToken {
-    ALLOCATOR_INITIALIZED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .expect("Frame allocator already initialized");
-    
-    let allocator = FrameAllocator::new(memory_map);
+/// This function may only be called once \
+/// All `MemoryMapEntryKind::Usable` entries in `memory_map` must be valid and unused
+pub unsafe fn initialize(memory_map: boot::MemoryMap, identity_map_token: IdentityMapToken) -> FrameAllocatorToken {
+    // Create a new allocator only if ALLOCATOR is uninitialized
+    ALLOCATOR.initialize_with(|| unsafe {
+        FrameAllocator::new(memory_map, identity_map_token)
+    }).expect("Frame allocator already initialized");
+
     unsafe {
-        debug_assert!(ALLOCATOR.is_none());
-        ALLOCATOR = Some(allocator);
         FrameAllocatorToken::new()
     }
 }
 
 #[derive(Debug)]
 pub struct FrameAllocator {
-    regions: FixedSizeVec<MemoryRegion, MAX_MEMORY_REGION_COUNT>
+    regions: FixedSizeVec<MemoryRegion, MAX_MEMORY_REGION_COUNT>,
+    last_allocation_region: AtomicUsize
 }
 
 impl FrameAllocator {
-    fn new(memory_map: boot::MemoryMap) -> FrameAllocator {
-        _ = memory_map;
-        todo!()
+    /// All `MemoryMapEntryKind::Usable` entries in `memory_map` must be valid and unused
+    unsafe fn new(memory_map: boot::MemoryMap, identity_map_token: IdentityMapToken) -> Self {
+        let mut allocator = Self {
+            regions: FixedSizeVec::new(),
+            last_allocation_region: AtomicUsize::new(0)
+        };
+
+        for entry in memory_map.entries.iter().filter(|x| x.kind == MemoryMapEntryKind::Usable) {
+            let region = unsafe { MemoryRegion::new(entry.base, entry.len, identity_map_token) };
+            if let Err(_) = allocator.regions.push(region) {
+                // TODO: warn!("Too many memory regions")
+                break;
+            }
+        }
+        
+        allocator
     }
 
     pub fn allocate(&self, frame_count: usize) -> Option<PhysicalAddress> {
-        _ = frame_count;
-        todo!()
+        let region_count = self.regions.len();
+        // start_region_id % region_count = index of the first region checked
+        let start_region_id = self.last_allocation_region.fetch_add(1, Ordering::SeqCst);
+        for i in 0..region_count {
+            // ((start_region_id % region_count) + i) % region_count = (start_region_id + i) % region_count
+            if let Some(address) = self.regions[(start_region_id + i) % region_count].allocate(frame_count) {
+                return Some(address);
+            }
+        }
+        None
     }
-
-    // pub fn allocate_dma(&self, frame_count: usize) -> Option<PhysicalAddress> {
-    //     _ = frame_count;
-    //     todo!()
-    // }
 
     pub fn free(&self, address: PhysicalAddress, frame_count: usize) {
         let region_ix = self.regions.as_slice().binary_search_by(|region| {
@@ -73,30 +88,8 @@ impl FrameAllocator {
     }
 }
 
-// repr(bool)?
-// https://internals.rust-lang.org/t/feature-request-repr-bool/16974
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum FrameState {
-    Free = 0,
-    Used = 1
-}
-
-impl Into<bool> for FrameState {
-    fn into(self) -> bool {
-        self == FrameState::Used
-    }
-}
-
-impl From<bool> for FrameState {
-    fn from(value: bool) -> Self {
-        if value { FrameState::Used }
-        else { FrameState::Free }
-    }
-}
-
 #[derive(Debug)]
-struct MemoryRegion {
+pub struct MemoryRegion {
     base: PhysicalAddress,
     frames_used: AtomicUsize,
     chunks: &'static [FrameBitmapChunk]
@@ -105,34 +98,61 @@ struct MemoryRegion {
 impl MemoryRegion {
     const MIN_FRAMES_REQUIRED: usize = 4;
 
-    /// base should be FRAME_SIZE aligned
-    pub fn new(base: PhysicalAddress, size: usize, identity_map: IdentityMapToken) -> Self {
-        /// size must be a multiple of FrameBitmapChunk::BITS
+    // TODO: refactor
+    /// `base` and `size` must be `FRAME_SIZE` aligned \
+    /// `size` must be greater than `FRAME_SIZE` \
+    /// Memory in range [`base`; `base + size`) must be valid and unused
+    pub unsafe fn new(base: PhysicalAddress, size: usize, identity_map_token: IdentityMapToken) -> Self {
+        assert_arg!(base, base % FRAME_SIZE == 0, "Must be FRAME_SIZE aligned.");
+        assert_arg!(size, size % FRAME_SIZE == 0, "Must be FRAME_SIZE aligned.");
+        assert_arg!(size, size > FRAME_SIZE, "Must be greater than FRAME_SIZE.");
+
+        // bytes per chunk
+        const ALIGNMENT: usize = FRAME_SIZE * FrameBitmapChunk::BITS as usize;
+
+        /// Returns size of a chunks array in bytes
+        /// size must be a multiple of ALIGNMENT
         fn chunk_array_size(size: usize) -> usize {
-            core::mem::size_of::<FrameBitmapChunk>() * (size / FrameBitmapChunk::BITS as usize)
+            (size / ALIGNMENT) * core::mem::size_of::<FrameBitmapChunk>()
         }
 
-        let base: usize = base.into();
-
-        const ALIGNMENT: usize = FRAME_SIZE * FrameBitmapChunk::BITS as usize;
-        // previous multiple of ALIGNMENT
-        let region_base = base / ALIGNMENT * ALIGNMENT;
         let region_end = (base + size).next_multiple_of(ALIGNMENT);
-        let region_size = region_end - region_base;
 
-        let start_reserved_count = (base % ALIGNMENT).div_ceil(FRAME_SIZE);
-        let end_reserved_count = (region_end - (base + size)).div_ceil(FRAME_SIZE);
+        let chunks_size = chunk_array_size(size);
+        // Frames required to store the chunk array
+        let chunks_size_frames = chunks_size.div_ceil(FRAME_SIZE);
+        assert!(chunks_size < size);
 
-        // start_reserved_count bits set to 1
-        let start_bits = 1_usize << start_reserved_count - 1;
-        // end_reserved_count bits set to 1
-        let end_bits = 1_usize << end_reserved_count - 1;
+        // Reserved frames - frames between ((base + end) | region_end)
+        let end_reserved_frames = (region_end - (base + size)) / FRAME_SIZE;
+        assert!(end_reserved_frames < FrameBitmapChunk::BITS as usize);
+        
+        let chunk_array_ptr = paging::to_virtual(base, identity_map_token).as_mut_ptr().cast::<FrameBitmapChunk>();
+        let mut start_reserved_frames_left = chunks_size_frames;
+        for i in 0..chunks_size {
+            unsafe {
+                // Reserved frames in the current chunk
+                let chunk = FrameBitmapChunk::new(start_reserved_frames_left);
+                start_reserved_frames_left = start_reserved_frames_left.saturating_sub(FrameBitmapChunk::BITS as usize);
 
-        let chunks_size = chunk_array_size(region_size);
-        debug_assert!(chunks_size > region_size);
-        // TODO: set next chunk_size bits to 1
+                core::ptr::write_volatile(chunk_array_ptr.add(i), chunk);
+            }
+        }
+        unsafe {
+            let last_chunk = (*chunk_array_ptr.add(chunks_size - 1)).0.get_mut();
+            // Set `end_reserved_frames` most significant bits to 1
+            let end_reserved_bits = !((1_usize << (usize::BITS as usize - end_reserved_frames)).wrapping_sub(1));
+            // `chunks_size_frames` and `end_reserved_frames` shouldn't overlap
+            assert_eq!(*last_chunk & end_reserved_bits, 0);
+            *last_chunk |= end_reserved_bits;
+        }
 
-        todo!()
+        assert!(chunk_array_ptr.is_aligned());
+        Self {
+            base,
+            frames_used: AtomicUsize::new(0),
+            chunks: unsafe { slice::from_raw_parts(chunk_array_ptr, chunks_size) }
+        }
     }
 
     fn frame_count(&self) -> usize {
@@ -180,7 +200,7 @@ impl MemoryRegion {
                 }
             }
         }
-        return None;
+        None
     }
 
     pub fn free(&self, base: PhysicalAddress, frame_count: usize) {
@@ -213,10 +233,14 @@ impl FrameBitmapChunk {
     /// Size of memory covered by this chunk
     pub const MEMORY_SIZE: usize = Self::BITS as usize * FRAME_SIZE;
 
+    pub fn new(initial_value: usize) -> Self {
+        FrameBitmapChunk(AtomicUsize::new(initial_value))
+    }
+
     pub fn allocate_single(&self) -> Option<u8> {
         if self.0.load(Ordering::SeqCst) != usize::MAX {
             for bit in 0..(usize::BITS as usize) {
-                if !unsafe { atomic_bit_test_set(self.0.as_mut_ptr(), bit) } {
+                if unsafe { !atomic_bit_test_set(self.0.as_mut_ptr(), bit) } {
                     return Some(bit as u8);
                 }
             }

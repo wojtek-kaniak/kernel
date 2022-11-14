@@ -1,4 +1,5 @@
 use core::arch::asm;
+use super::interrupts::idt::Idt;
 
 pub unsafe fn atomic_bit_test_set(value: *mut usize, index: usize) -> bool {
     let result: u32;
@@ -29,6 +30,29 @@ pub fn time_stamp_counter() -> u64 {
     (high as u64) << 64 | (low as u64)
 }
 
+pub fn load_idt(idt: &'static Idt) {
+    let idt = idt as *const Idt;
+    unsafe {
+        asm!(
+            "lidt {}",
+            in(reg) idt,
+            options(nomem, preserves_flags, nostack)
+        );
+    }
+}
+
+pub fn halt() -> ! {
+    loop {
+        unsafe {
+            asm!(
+                "cli",
+                "hlt",
+                options(noreturn)
+            )
+        }
+    }
+}
+
 macro_rules! read_cr {
     ($register:literal) => {{
         let result: u64;
@@ -40,7 +64,7 @@ macro_rules! read_cr {
         result
     }}
 }
-pub(crate) use read_cr;
+pub(super) use read_cr;
 
 macro_rules! write_cr {
     ($register:literal, $value:expr) => {{
@@ -53,4 +77,4 @@ macro_rules! write_cr {
         value
     }}
 }
-pub(crate) use write_cr;
+pub(super) use write_cr;
