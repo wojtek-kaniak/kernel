@@ -1,17 +1,22 @@
 #![allow(dead_code)] // TODO (WIP)
 mod structs;
 
+use spin::Once;
 use structs::*;
 pub use structs::PAGE_SIZE;
 
-use crate::{allocator::physical::FrameAllocator, common::{macros::{token_type, token_from}, sync::InitOnce}, arch::{intrinsics::write_cr, PhysicalAddress, VirtualAddress}};
+use crate::{
+    allocator::physical::FrameAllocator,
+    arch::{intrinsics::write_cr, PhysicalAddress, VirtualAddress},
+    common::macros::{token_from, token_type}
+};
 
 use super::intrinsics::read_cr;
 
 // u64 on private api
 // usize on public api (same public interface on various architectures)
 
-static IDENTITY_MAP_BASE: InitOnce<PhysicalAddress> = InitOnce::new();
+static IDENTITY_MAP_BASE: Once<PhysicalAddress> = Once::new();
 
 const CR3_ADDRESS_MASK: u64 = 0xFFFFFFFFFF000;
 
@@ -22,8 +27,14 @@ token_type!(IdentityMapToken);
 // TODO
 token_from!(PagingToken, IdentityMapToken);
 
+/// This function may only be called once, all subsequent calls will panic or be ignored
 pub fn initialize_identity_map(identity_map_base: PhysicalAddress) -> IdentityMapToken {
-    IDENTITY_MAP_BASE.initialize(identity_map_base).expect("Identity map already initialized.");
+    // best effort panic
+    if IDENTITY_MAP_BASE.is_completed() {
+        panic!("Identity map already initialized.");
+    }
+
+    IDENTITY_MAP_BASE.call_once(|| identity_map_base);
 
     unsafe {
         IdentityMapToken::new()
@@ -53,7 +64,7 @@ unsafe fn write_pml4_address(address: PhysicalAddress) {
 }
 
 fn identity_map_base(#[allow(unused_variables)] token: IdentityMapToken) -> PhysicalAddress {
-    debug_assert!(IDENTITY_MAP_BASE.is_initialized());
+    debug_assert!(IDENTITY_MAP_BASE.is_completed());
     unsafe {
         *IDENTITY_MAP_BASE.get_unchecked()
     }

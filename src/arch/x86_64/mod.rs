@@ -21,8 +21,8 @@ impl From<u8> for PrivilegeLevel {
     }
 }
 
-impl Into<u8> for PrivilegeLevel {
-    fn into(self) -> u8 {
-        self.0
+impl From<PrivilegeLevel> for u8 {
+    fn from(val: PrivilegeLevel) -> Self {
+        val.0
     }
 }

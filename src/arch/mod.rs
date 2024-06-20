@@ -107,15 +107,15 @@ impl From<u64> for PhysicalAddress {
     }
 }
 
-impl Into<usize> for PhysicalAddress {
-    fn into(self) -> usize {
-        self.0
+impl From<PhysicalAddress> for usize {
+    fn from(val: PhysicalAddress) -> Self {
+        val.0
     }
 }
 
-impl Into<u64> for PhysicalAddress {
-    fn into(self) -> u64 {
-        self.0 as u64
+impl From<PhysicalAddress> for u64 {
+    fn from(val: PhysicalAddress) -> Self {
+        val.0 as u64
     }
 }
 
@@ -243,15 +243,15 @@ impl From<u64> for VirtualAddress {
     }
 }
 
-impl Into<usize> for VirtualAddress {
-    fn into(self) -> usize {
-        self.0
+impl From<VirtualAddress> for usize {
+    fn from(val: VirtualAddress) -> Self {
+        val.0
     }
 }
 
-impl Into<u64> for VirtualAddress {
-    fn into(self) -> u64 {
-        self.0 as u64
+impl From<VirtualAddress> for u64 {
+    fn from(val: VirtualAddress) -> Self {
+        val.0 as u64
     }
 }
 

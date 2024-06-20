@@ -1,4 +1,4 @@
-use core::arch::asm;
+use core::{arch::asm, mem::MaybeUninit};
 use super::interrupts::idt::Idt;
 
 pub unsafe fn atomic_bit_test_set(value: *mut usize, index: usize) -> bool {
@@ -13,7 +13,73 @@ pub unsafe fn atomic_bit_test_set(value: *mut usize, index: usize) -> bool {
         );
 
         // This is safe, as only the lowest bit can be set
-        core::mem::transmute(result as u8)
+        result as u8 != 0
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CpuidResult {
+    eax: u32,
+    ebx: u32,
+    ecx: u32,
+    edx: u32,
+}
+
+impl From<(u32, u32, u32, u32)> for CpuidResult {
+    fn from(value: (u32, u32, u32, u32)) -> Self {
+        let (eax, ebx, ecx, edx) = value;
+        Self {
+            eax, ebx, ecx, edx
+        }
+    }
+}
+
+impl From<CpuidResult> for (u32, u32, u32, u32) {
+    fn from(value: CpuidResult) -> Self {
+        (value.eax, value.ebx, value.ecx, value.edx)
+    }
+}
+
+pub unsafe fn cpuid(eax: MaybeUninit<u32>, ecx: MaybeUninit<u32>) -> CpuidResult {
+    // TODO: verify if cpuid is available
+    let (eax_in, ecx_in) = (eax, ecx);
+    let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
+    unsafe {
+        asm!(
+            "mov {1:e}, ebx",
+            "cpuid",
+            // ebx can't be used in inline asm, see: https://github.com/rust-lang/rust/pull/84658
+            "mov {0:e}, ebx",
+            "mov ebx, {1:e}",
+            out(reg) ebx,
+            out(reg) _,
+            inout("eax") eax_in => eax,
+            inout("ecx") ecx_in => ecx,
+            out("edx") edx,
+            options(nostack, nomem, preserves_flags)
+        );
+    }
+    
+    (eax, ebx, ecx, edx).into()
+}
+
+pub mod cpuid {
+    use core::mem::MaybeUninit;
+
+    use super::cpuid;
+
+    pub fn brand() -> [u8; 12] {
+        let res = unsafe {
+            cpuid(MaybeUninit::new(0), MaybeUninit::uninit())
+        };
+
+        let mut out = [0; 12];
+
+        out[0..4].copy_from_slice(&res.ebx.to_le_bytes());
+        out[4..8].copy_from_slice(&res.edx.to_le_bytes());
+        out[8..].copy_from_slice(&res.ecx.to_le_bytes());
+
+        out
     }
 }
 
@@ -27,9 +93,10 @@ pub fn time_stamp_counter() -> u64 {
             options(nostack, nomem, preserves_flags)
         );
     }
-    (high as u64) << 64 | (low as u64)
+    (high as u64) << 32 | (low as u64)
 }
 
+// TODO: should it be unsafe?
 pub fn load_idt(idt: &'static Idt) {
     let idt = idt as *const Idt;
     unsafe {
@@ -47,7 +114,6 @@ pub fn halt() -> ! {
             asm!(
                 "cli",
                 "hlt",
-                options(noreturn)
             )
         }
     }

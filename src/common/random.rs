@@ -1,19 +1,24 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{
-    common::{sync::InitOnce, time::UnixEpochTime},
-    arch::intrinsics::time_stamp_counter
-};
+use spin::Once;
 
-static WEAK_RNG: InitOnce<XorshiftStar> = InitOnce::new();
+use crate::{common::time::UnixEpochTime, arch::intrinsics::time_stamp_counter};
 
-/// This function may be only called once
+static WEAK_RNG: Once<XorshiftStar> = Once::new();
+
+/// This function may be only called once, all subsequent calls will panic or be ignored
 pub fn weak_initialize(time: UnixEpochTime) {
-    let mut seed: u64 = time.into();
-    seed ^= time_stamp_counter();
-    let rng = XorshiftStar::new(seed);
-    let result = WEAK_RNG.initialize(rng);
-    debug_assert!(result.is_ok());
+    // best effort panic
+    if WEAK_RNG.is_completed() {
+        panic!("weak RNG already initialized");
+    }
+
+    WEAK_RNG.call_once(|| {
+        let mut seed: u64 = time.into();
+        seed ^= time_stamp_counter();
+
+        XorshiftStar::new(seed)
+    });
 }
 
 pub fn weak() -> WeakRng {

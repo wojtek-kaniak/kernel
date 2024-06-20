@@ -3,7 +3,7 @@ use crate::{common::{macros::{debug_assert_arg, assert_arg}, time::UnixEpochTime
 
 use self::logo::LogoScreen;
 
-use super::{devices::framebuffer::{FramebufferInfo, FramebufferList, RawFramebuffer, Framebuffer}, intrinsics::halt};
+use super::{devices::framebuffer::{Framebuffer, FramebufferInfo, FramebufferList, RawFramebuffer}, intrinsics::{cpuid, halt}};
 
 mod logo;
 
@@ -15,25 +15,39 @@ pub static mut BOOT_TERMINAL_WRITER: Option<BootTerminalWriter> = Option::None;
 pub fn main(data: BootData) -> ! {
     initialize_terminal(data.terminal_writer);
 
+    print_cpu_brand();
+    // halt();
+
     // TODO: initialize arch::devices::framebuffer instead
-    let framebuffer = data.framebuffers.entries.first().map(|&fb| unsafe { RawFramebuffer::new(fb).ok() }).flatten();
+    let framebuffer = data.framebuffers.entries.first().and_then(|&fb| unsafe { RawFramebuffer::new(fb).ok() });
     if let Some(framebuffer) = framebuffer {
         LogoScreen::new(Framebuffer::new(&framebuffer));
     }
 
     let identity_map_token = crate::arch::paging::initialize_identity_map(data.identity_map_base);
     // TODO: fix memory map loading
-    halt();
+    // halt();
     unsafe {
         crate::allocator::physical::initialize(data.memory_map, identity_map_token);
     }
+
+    boot_println!("time: {}", data.boot_time.millis());
+    boot_println!("boot: {:?}", data.terminal_writer);
+
+    halt();
     
-    todo!()
+    // todo!()
     //unreachable!();
 }
 
 fn initialize_terminal(writer: BootTerminalWriter) {
     unsafe { BOOT_TERMINAL_WRITER = Some(writer) };
+}
+
+fn print_cpu_brand() {
+    let brand = cpuid::brand();
+    let brand = core::str::from_utf8(&brand).unwrap_or("[invalid UTF-8]");
+    boot_println!("CPU brand string: {brand}");
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -48,15 +62,9 @@ pub struct BootData {
     pub kernel_address: (PhysicalAddress, VirtualAddress),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub struct BootTerminalWriter(fn(&str) -> core::fmt::Result);
-
-impl Debug for BootTerminalWriter {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_tuple(stringify!(BootTerminalWriter)).finish()
-    }
-}
 
 impl Write for BootTerminalWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -108,7 +116,7 @@ impl MemoryMap {
 
         assert_arg!(
             entries,
-            entries.len() > 0,
+            !entries.is_empty(),
             "Memory map contains no elements"
         );
         debug_assert_arg!(
@@ -167,15 +175,15 @@ pub enum MemoryMapEntryKind {
 }
 
 // TODO: refactor into generic logger with fb/serial/etc. support
-#[macro_export]
 macro_rules! boot_print {
     ($($arg:tt)*) => (_ = core::fmt::Write::write_fmt(
         unsafe { crate::arch::boot::BOOT_TERMINAL_WRITER }.as_mut().expect("Boot terminal unavailable"), format_args!($($arg)*)
     ));
 }
+pub(crate) use boot_print;
 
-#[macro_export]
 macro_rules! boot_println {
-    () => (crate::print!("\n"));
-    ($($arg:tt)*) => (crate::boot_print!("{}\n", format_args!($($arg)*)));
+    () => (crate::arch::boot::print!("\n"));
+    ($($arg:tt)*) => (crate::arch::boot::boot_print!("{}\n", format_args!($($arg)*)));
 }
+pub(crate) use boot_println;

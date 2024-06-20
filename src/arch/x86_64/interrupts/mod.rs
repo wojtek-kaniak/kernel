@@ -24,7 +24,8 @@ pub trait InterruptHandler {
     type Interrupt: self::Interrupt;
 
     /// This function should only be called by hardware
-    extern "C" fn invoke(never: core::convert::Infallible) -> !;
+    #[deprecated = "should not be called directly"]
+    extern "C" fn invoke() -> !;
 }
 
 macro_rules! _define_interrupt_handler_asm {
@@ -123,7 +124,7 @@ macro_rules! _define_interrupt_handler_asm {
     };
 }
 #[doc(hidden)]
-pub(super) use _define_interrupt_handler_asm;
+use _define_interrupt_handler_asm;
 
 macro_rules! define_interrupt_handler {
     {handler $name:ident $args:tt for $interrupt:ty $body:block } => {
@@ -140,7 +141,7 @@ macro_rules! define_interrupt_handler {
             type Interrupt = $interrupt;
 
             #[naked]
-            extern "C" fn invoke(never: ::core::convert::Infallible) -> ! {
+            extern "C" fn invoke() -> ! {
                 unsafe {
                     $crate::arch::x86_64::interrupts::_define_interrupt_handler_asm!($args)
                 }
@@ -158,10 +159,12 @@ macro_rules! define_interrupt_handler {
 }
 pub(crate) use define_interrupt_handler;
 
+// TODO: store the stack frame
 pub struct StackFrame;
 
 unsafe impl Bittable for StackFrame {}
 
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ErrorCode(pub usize);
 
@@ -173,9 +176,9 @@ impl From<usize> for ErrorCode {
     }
 }
 
-impl Into<usize> for ErrorCode {
-    fn into(self) -> usize {
-        self.0
+impl From<ErrorCode> for usize {
+    fn from(val: ErrorCode) -> Self {
+        val.0
     }
 }
 

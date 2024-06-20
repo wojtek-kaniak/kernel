@@ -68,10 +68,6 @@ fn load_bootloader_info() -> BootloaderInfo {
 }
 
 fn load_memory_map() -> MemoryMap {
-    unsafe {
-        return MemoryMap::new(MaybeUninit::slice_assume_init_ref(&MEMORY_MAP_BUFFER[..1]));
-    }
-    
     let mmap = MMAP_REQUEST
         .get_response()
         .get()
@@ -84,11 +80,12 @@ fn load_memory_map() -> MemoryMap {
         );
     }
 
-    let mut entries = mmap.entries.as_ptr().expect("Invalid memory map");
+    let entries = mmap.entries.as_ptr().expect("Invalid memory map");
 
+    #[allow(clippy::needless_range_loop)]
     for i in 0..mmap.entry_count as usize {
         unsafe {
-            let entry = entries.read().get().expect("Invalid memory map");
+            let entry = entries.add(i).read().get().expect("Invalid memory map");
 
             use limine::LimineMemoryMapEntryType as LimineMemType;
             MEMORY_MAP_BUFFER[i] = MaybeUninit::new(MemoryMapEntry::new(
@@ -106,8 +103,6 @@ fn load_memory_map() -> MemoryMap {
                     LimineMemType::Usable => MemoryMapEntryKind::Usable,
                 },
             ));
-
-            entries = entries.add(i);
         }
     }
 
@@ -132,7 +127,7 @@ fn load_framebuffer_info() -> FramebufferList {
         .get_response()
         .get()
         .expect("Framebuffer info unavailable");
-    let mut entries = fb.framebuffers.as_ptr().expect("Invalid framebuffer info");
+    let entries = fb.framebuffers.as_ptr().expect("Invalid framebuffer info");
 
     if fb.framebuffer_count as usize > FRAMEBUFFER_INFO_BUFFER_SIZE {
         panic!(
@@ -141,9 +136,10 @@ fn load_framebuffer_info() -> FramebufferList {
         );
     }
 
+    #[allow(clippy::needless_range_loop)]
     for i in 0..fb.framebuffer_count as usize {
         unsafe {
-            let limine_fb = entries.read().get().expect("Invalid framebuffer info");
+            let limine_fb = entries.add(i).read().get().expect("Invalid framebuffer info");
             let color_mode = if limine_fb.memory_model == LIMINE_MEMORY_MODEL_RGB {
                 ColorMode::Rgb
             } else {
@@ -168,19 +164,19 @@ fn load_framebuffer_info() -> FramebufferList {
                 stride: limine_fb.pitch as usize,
             };
             FRAMEBUFFER_INFO_BUFFER[i] = MaybeUninit::new(entry);
-
-            entries = entries.offset(i as isize);
         }
     }
 
     FramebufferList {
-        entries: unsafe { MaybeUninit::slice_assume_init_ref(&FRAMEBUFFER_INFO_BUFFER[..fb.framebuffer_count as usize]) },
+        entries: unsafe {
+            MaybeUninit::slice_assume_init_ref(&FRAMEBUFFER_INFO_BUFFER[..fb.framebuffer_count as usize])
+        },
     }
 }
 
 fn load_boot_time() -> UnixEpochTime {
     let time = BOOT_TIME_REQUEST.get_response().get().expect("Boot time unavailable").boot_time as u64;
-    UnixEpochTime::new(time)
+    UnixEpochTime::new(time.checked_mul(1000).expect("boot time out of range"))
 }
 
 fn load_kernel_address() -> (PhysicalAddress, VirtualAddress) {

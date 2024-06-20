@@ -24,8 +24,9 @@ impl Idt {
     }
 
     pub fn register_handler<Handler: InterruptHandler>(&mut self) {
-        type RawHandler = extern "C" fn(core::convert::Infallible) -> !;
+        type RawHandler = extern "C" fn() -> !;
         let vector: IdtVector = Handler::Interrupt::VECTOR;
+        #[allow(deprecated)]
         let handler: RawHandler = Handler::invoke;
         self[vector].set_offset(handler as usize);
     }
@@ -183,9 +184,9 @@ impl From<u8> for GateType {
     }
 }
 
-impl Into<u8> for GateType {
-    fn into(self) -> u8 {
-        self.0
+impl From<GateType> for u8 {
+    fn from(val: GateType) -> Self {
+        val.0
     }
 }
 
@@ -233,9 +234,9 @@ impl IdtVector {
     }
 }
 
-impl Into<u8> for IdtVector {
-    fn into(self) -> u8 {
-        self.0
+impl From<IdtVector> for u8 {
+    fn from(val: IdtVector) -> Self {
+        val.0
     }
 }
 

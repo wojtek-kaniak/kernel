@@ -2,33 +2,38 @@
 
 use core::{sync::atomic::{AtomicUsize, Ordering}, slice};
 
+use arrayvec::ArrayVec;
+
 use crate::{
-    arch::{boot::{self, MemoryMapEntryKind}, paging::{self, IdentityMapToken}, PhysicalAddress, intrinsics::atomic_bit_test_set},
-    common::{macros::{debug_assert_arg, token_type, assert_arg}, collections::FixedSizeVec, sync::InitOnce}
+    arch::{boot::{self, MemoryMapEntryKind}, intrinsics::atomic_bit_test_set, paging::{self, IdentityMapToken}, PhysicalAddress},
+    common::{macros::{assert_arg, debug_assert_arg, token_type}, sync::InitOnce}
 };
 
 pub const FRAME_SIZE: usize = paging::PAGE_SIZE;
 pub const MAX_MEMORY_REGION_COUNT: usize = 4096;
 
-// Initialized once, frequently read
-static ALLOCATOR: InitOnce<FrameAllocator> = InitOnce::new();
+static ALLOCATOR: InitOnce<FrameAllocator> = InitOnce::new(FrameAllocator::empty());
 
 token_type!(FrameAllocatorToken);
 
 pub fn global_allocator(#[allow(unused_variables)] token: FrameAllocatorToken) -> &'static FrameAllocator {
-    unsafe {
-        debug_assert!(ALLOCATOR.is_initialized());
-        ALLOCATOR.get_unchecked()
-    }
+    debug_assert!(ALLOCATOR.is_completed());
+    // SAFETY: allocator was initialized
+    unsafe { ALLOCATOR.get_unchecked() }
 }
 
-/// This function may only be called once \
+/// This function may only be called once, all subsequent calls will panic or be ignored \
 /// All `MemoryMapEntryKind::Usable` entries in `memory_map` must be valid and unused
 pub unsafe fn initialize(memory_map: boot::MemoryMap, identity_map_token: IdentityMapToken) -> FrameAllocatorToken {
+    // best effort panic
+    if ALLOCATOR.is_completed() {
+        panic!("initialize called after the allocator has been initialized");
+    }
+
     // Create a new allocator only if ALLOCATOR is uninitialized
-    ALLOCATOR.initialize_with(|| unsafe {
-        FrameAllocator::new(memory_map, identity_map_token)
-    }).expect("Frame allocator already initialized");
+    ALLOCATOR.initialize(|allocator| unsafe {
+        allocator.fill(memory_map, identity_map_token);
+    });
 
     unsafe {
         FrameAllocatorToken::new()
@@ -37,27 +42,27 @@ pub unsafe fn initialize(memory_map: boot::MemoryMap, identity_map_token: Identi
 
 #[derive(Debug)]
 pub struct FrameAllocator {
-    regions: FixedSizeVec<MemoryRegion, MAX_MEMORY_REGION_COUNT>,
+    regions: ArrayVec<MemoryRegion, MAX_MEMORY_REGION_COUNT>,
     last_allocation_region: AtomicUsize
 }
 
 impl FrameAllocator {
-    /// All `MemoryMapEntryKind::Usable` entries in `memory_map` must be valid and unused
-    unsafe fn new(memory_map: boot::MemoryMap, identity_map_token: IdentityMapToken) -> Self {
-        let mut allocator = Self {
-            regions: FixedSizeVec::new(),
-            last_allocation_region: AtomicUsize::new(0)
-        };
+    const fn empty() -> Self {
+        Self {
+            regions: ArrayVec::new_const(),
+            last_allocation_region: AtomicUsize::new(0),
+        }
+    }
 
+    /// All `MemoryMapEntryKind::Usable` entries in `memory_map` must be valid and unused
+    unsafe fn fill(&mut self, memory_map: boot::MemoryMap, identity_map_token: IdentityMapToken) {
         for entry in memory_map.entries.iter().filter(|x| x.kind == MemoryMapEntryKind::Usable) {
             let region = unsafe { MemoryRegion::new(entry.base, entry.len, identity_map_token) };
-            if let Err(_) = allocator.regions.push(region) {
+            if self.regions.try_push(region).is_err() {
                 // TODO: warn!("Too many memory regions")
                 break;
             }
         }
-        
-        allocator
     }
 
     pub fn allocate(&self, frame_count: usize) -> Option<PhysicalAddress> {
@@ -211,7 +216,7 @@ impl MemoryRegion {
         let chunk_ix = Self::chunk_index(self.base, base);
         let offset = (Into::<usize>::into(base) / FRAME_SIZE) % FrameBitmapChunk::BITS as usize;
         self.chunks[chunk_ix].free(offset as u8, frame_count as u8);
-        self.frames_used.fetch_sub(frame_count as usize, Ordering::Relaxed); // TODO: is relaxed enough?
+        self.frames_used.fetch_sub(frame_count, Ordering::Relaxed); // TODO: is relaxed enough?
     }
 
     pub fn check_if_owned(&self, address: PhysicalAddress) -> bool {
@@ -240,13 +245,13 @@ impl FrameBitmapChunk {
     pub fn allocate_single(&self) -> Option<u8> {
         if self.0.load(Ordering::SeqCst) != usize::MAX {
             for bit in 0..(usize::BITS as usize) {
-                if unsafe { !atomic_bit_test_set(self.0.as_mut_ptr(), bit) } {
+                if unsafe { !atomic_bit_test_set(self.0.as_ptr(), bit) } {
                     return Some(bit as u8);
                 }
             }
         }
 
-        return None;
+        None
     }
 
     pub fn allocate_many(&self, count: u8) -> Option<u8> {
@@ -272,7 +277,7 @@ impl FrameBitmapChunk {
             }
         }
 
-        return None;
+        None
     }
 
     pub fn free(&self, offset: u8, count: u8) {

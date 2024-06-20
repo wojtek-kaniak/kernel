@@ -32,6 +32,7 @@ if ($null -eq $env:QEMU) {
 } else {
     $QEMU = $env:QEMU
 }
+
 &$QEMU `
     -machine q35 -cpu qemu64 -M smm=off `
-    -no-reboot -serial stdio "$TARGET_PATH/os.iso"
+    -no-reboot -serial stdio -cdrom "$TARGET_PATH/os.iso" -d int,cpu_reset $args

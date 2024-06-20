@@ -4,7 +4,7 @@ use crate::{common::macros::{token_type, assert_arg}, arch::VirtualAddress};
 
 token_type!(FramebuffersToken);
 
-pub fn initialize(framebuffers: FramebufferList) -> FramebuffersToken {
+pub fn initialize(_framebuffers: FramebufferList) -> FramebuffersToken {
     todo!()
 }
 
@@ -113,9 +113,9 @@ impl From<(usize, usize)> for Pixel {
     }
 }
 
-impl Into<(usize, usize)> for Pixel {
-    fn into(self) -> (usize, usize) {
-        (self.x, self.y)
+impl From<Pixel> for (usize, usize) {
+    fn from(val: Pixel) -> Self {
+        (val.x, val.y)
     }
 }
 
@@ -174,10 +174,10 @@ impl Rgb {
     }
 }
 
-impl Into<u32> for Rgb {
-    fn into(self) -> u32 {
+impl From<Rgb> for u32 {
+    fn from(val: Rgb) -> Self {
         // Call the const version
-        self.into_argb32()
+        val.into_argb32()
     }
 }
 

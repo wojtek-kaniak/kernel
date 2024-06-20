@@ -1,5 +1,6 @@
 use core::{mem::MaybeUninit, ops::{Index, IndexMut}};
 
+// Switch to fixedvec
 #[derive(Debug)]
 pub struct FixedSizeVec<T, const MAX_SIZE: usize> {
     data: [MaybeUninit<T>; MAX_SIZE],
@@ -13,6 +14,10 @@ impl<T, const MAX_SIZE: usize> FixedSizeVec<T, MAX_SIZE> {
 
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub unsafe fn set_len(&mut self, new_len: usize) {
@@ -85,7 +90,7 @@ impl<T, const MAX_SIZE: usize> FixedSizeVec<T, MAX_SIZE> {
     }
 
     pub fn pop(&mut self) -> Option<T> {
-        if self.len() == 0 {
+        if self.is_empty() {
             None
         } else {
             unsafe {
@@ -124,6 +129,12 @@ impl<T, const MAX_SIZE: usize> FixedSizeVec<T, MAX_SIZE> {
     }
 }
 
+impl<T, const MAX_SIZE: usize> Default for FixedSizeVec<T, MAX_SIZE> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Clone, const MAX_SIZE: usize> FixedSizeVec<T, MAX_SIZE> {
     pub fn resize(&mut self, new_len: usize, fill_value: T) -> Result<(), ()> {
         if new_len > MAX_SIZE {
@@ -142,7 +153,7 @@ impl<T: Clone, const MAX_SIZE: usize> FixedSizeVec<T, MAX_SIZE> {
             self.truncate(new_len);
         }
 
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -195,7 +206,7 @@ impl<'a, T, const MAX_SIZE: usize> IntoIterator for &'a FixedSizeVec<T, MAX_SIZE
 
     fn into_iter(self) -> Self::IntoIter {
         unsafe {
-            MaybeUninit::slice_assume_init_ref(&self.data.get_unchecked(..self.len())).into_iter()
+            MaybeUninit::slice_assume_init_ref(self.data.get_unchecked(..self.len())).iter()
         }
     }
 }
