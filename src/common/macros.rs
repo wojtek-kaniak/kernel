@@ -84,19 +84,29 @@ pub struct InnerToken {
 }
 
 impl InnerToken {
+    /// # Safety
+    /// See the token's preconditions
     pub const unsafe fn new() -> Self {
         Self { _private: () }
     }
 }
 
 macro_rules! token_type {
-    ($type:ident) => {
+    (
+        $(#[doc = $doc:expr])*
+        $type:ident
+    ) => {
+        $(
+            #[doc = $doc]
+        )*
         #[derive(Clone, Copy)]
         pub struct $type {
             _inner: crate::common::macros::InnerToken
         }
 
         impl $type {
+            /// # Safety
+            /// See the struct's doc
             pub const unsafe fn new() -> Self {
                 unsafe {
                     $type { _inner: crate::common::macros::InnerToken::new() }

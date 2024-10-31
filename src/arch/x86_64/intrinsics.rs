@@ -1,6 +1,8 @@
 use core::{arch::asm, mem::MaybeUninit};
-use super::interrupts::idt::Idt;
+use super::interrupts::idt::IdtRegister;
 
+/// # Safety
+/// `value` pointer must be writable
 pub unsafe fn atomic_bit_test_set(value: *mut usize, index: usize) -> bool {
     let result: u32;
     unsafe {
@@ -40,6 +42,9 @@ impl From<CpuidResult> for (u32, u32, u32, u32) {
     }
 }
 
+// TODO: should it be unsafe?
+/// # Safety
+/// The request must be valid
 pub unsafe fn cpuid(eax: MaybeUninit<u32>, ecx: MaybeUninit<u32>) -> CpuidResult {
     // TODO: verify if cpuid is available
     let (eax_in, ecx_in) = (eax, ecx);
@@ -96,14 +101,15 @@ pub fn time_stamp_counter() -> u64 {
     (high as u64) << 32 | (low as u64)
 }
 
-// TODO: should it be unsafe?
-pub fn load_idt(idt: &'static Idt) {
-    let idt = idt as *const Idt;
+/// # Safety
+/// The referenced IDT must have the correct lifetime
+/// (be valid until replaced).
+pub unsafe fn load_idt(idt: IdtRegister) {
     unsafe {
         asm!(
-            "lidt {}",
-            in(reg) idt,
-            options(nomem, preserves_flags, nostack)
+            "lidt [{}]",
+            in(reg) &idt as *const _,
+            options(readonly, preserves_flags, nostack)
         );
     }
 }

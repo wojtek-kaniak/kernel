@@ -1,9 +1,9 @@
 use core::fmt::{Debug, Display, Write};
-use crate::{common::{macros::{debug_assert_arg, assert_arg}, time::UnixEpochTime}, arch::{PhysicalAddress, VirtualAddress}};
+use crate::{arch::{interrupts::idt::Idt, processor::Processor, PhysicalAddress, PrivilegeLevel, SegmentIndex, SegmentSelector, VirtualAddress}, common::{macros::{assert_arg, debug_assert_arg}, time::UnixEpochTime}};
 
 use self::logo::LogoScreen;
 
-use super::{devices::framebuffer::{Framebuffer, FramebufferInfo, FramebufferList, RawFramebuffer}, intrinsics::{cpuid, halt}};
+use super::{devices::framebuffer::{Framebuffer, FramebufferInfo, FramebufferList, RawFramebuffer}, interrupts::{define_interrupt_handler, StackFrame}, intrinsics::{cpuid, halt}};
 
 mod logo;
 
@@ -19,10 +19,10 @@ pub fn main(data: BootData) -> ! {
     // halt();
 
     // TODO: initialize arch::devices::framebuffer instead
-    let framebuffer = data.framebuffers.entries.first().and_then(|&fb| unsafe { RawFramebuffer::new(fb).ok() });
-    if let Some(framebuffer) = framebuffer {
-        LogoScreen::new(Framebuffer::new(&framebuffer));
-    }
+    // let framebuffer = data.framebuffers.entries.first().and_then(|&fb| unsafe { RawFramebuffer::new(fb).ok() });
+    // if let Some(framebuffer) = framebuffer {
+    //     LogoScreen::new(Framebuffer::new(&framebuffer));
+    // }
 
     let identity_map_token = crate::arch::paging::initialize_identity_map(data.identity_map_base);
     // TODO: fix memory map loading
@@ -34,10 +34,43 @@ pub fn main(data: BootData) -> ! {
     boot_println!("time: {}", data.boot_time.millis());
     boot_println!("boot: {:?}", data.terminal_writer);
 
+    let mut proc = Processor {
+        idt: Idt::new(),
+    };
+    
+    proc.idt.swap_handler::<InvalidOpcodeTest>(
+        SegmentSelector::new(
+            SegmentIndex::new(5),
+            crate::arch::TableIndicator::Gdt,
+            PrivilegeLevel::KERNEL
+        )
+    );
+    
+    unsafe {
+        Idt::load(&proc.idt);
+    }
+
+    // unsafe { core::arch::asm!("ud2") }
+
     halt();
     
     // todo!()
     //unreachable!();
+}
+
+fn breakpoint() -> ! {
+    loop {
+        boot_println!("test");
+        unsafe {
+            core::arch::asm!("pause");
+        }
+    }
+}
+
+define_interrupt_handler! {
+    handler InvalidOpcodeTest(stack_frame: &StackFrame) for super::interrupts::InvalidOpcode {
+        breakpoint()
+    }
 }
 
 fn initialize_terminal(writer: BootTerminalWriter) {
@@ -107,9 +140,9 @@ pub struct MemoryMap {
 }
 
 impl MemoryMap {
-    /// All entries must be sorted by base \
-    /// `entries.len()` must be greater than 0
-    /// All entries must be valid, all `MemoryMapEntryKind::Usable` entries must be usable
+    /// # Safety
+    /// All entries must be sorted by base and valid,
+    /// all `MemoryMapEntryKind::Usable` entries must not be overlapping
     pub unsafe fn new(entries: &'static [MemoryMapEntry]) -> Self {
         #[cfg(debug_assertions)]
         use itertools::Itertools;

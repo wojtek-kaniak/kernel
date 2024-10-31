@@ -20,9 +20,15 @@ static IDENTITY_MAP_BASE: Once<PhysicalAddress> = Once::new();
 
 const CR3_ADDRESS_MASK: u64 = 0xFFFFFFFFFF000;
 
-token_type!(PagingToken);
+token_type!{
+    /// Asserts that paging is set up
+    PagingToken
+}
 
-token_type!(IdentityMapToken);
+token_type!{
+    /// Asserts that the identity map is initialized
+    IdentityMapToken
+}
 
 // TODO
 token_from!(PagingToken, IdentityMapToken);

@@ -23,9 +23,9 @@ macro_rules! define_interrupt {
 pub trait InterruptHandler {
     type Interrupt: self::Interrupt;
 
+    /// # Safety
     /// This function should only be called by hardware
-    #[deprecated = "should not be called directly"]
-    extern "C" fn invoke() -> !;
+    unsafe extern "C" fn invoke() -> !;
 }
 
 macro_rules! _define_interrupt_handler_asm {
@@ -40,7 +40,7 @@ macro_rules! _define_interrupt_handler_asm {
                 ::core::mem::align_of::<StackFrame>()
             );
 
-            ::core::arch::asm!(
+            ::core::arch::naked_asm!(
                 "
                 push    r11
                 push    r10
@@ -66,7 +66,6 @@ macro_rules! _define_interrupt_handler_asm {
                 iretq
                 ",
                 sym Self::handler,
-                options(noreturn)
             )
         }
     };
@@ -87,7 +86,7 @@ macro_rules! _define_interrupt_handler_asm {
             ::static_assertions::const_assert_eq!(::core::mem::align_of::<$argtype2>(), ::core::mem::align_of::<ErrorCode>());
             ::static_assertions::assert_impl_all!($argtype2: $crate::common::mem::Bittable);
 
-            ::core::arch::asm!(
+            ::core::arch::naked_asm!(
                 "
                 push    rax
                 push    r11
@@ -118,13 +117,12 @@ macro_rules! _define_interrupt_handler_asm {
                 iretq
                 ",
                 sym Self::handler,
-                options(noreturn)
             )
         }
     };
 }
 #[doc(hidden)]
-use _define_interrupt_handler_asm;
+pub(crate) use _define_interrupt_handler_asm;
 
 macro_rules! define_interrupt_handler {
     {handler $name:ident $args:tt for $interrupt:ty $body:block } => {
@@ -137,11 +135,11 @@ macro_rules! define_interrupt_handler {
             extern "sysv64" fn handler $args -> () $body
         }
 
-        impl InterruptHandler for $name {
+        impl crate::arch::interrupts::InterruptHandler for $name {
             type Interrupt = $interrupt;
 
             #[naked]
-            extern "C" fn invoke() -> ! {
+            unsafe extern "C" fn invoke() -> ! {
                 unsafe {
                     $crate::arch::x86_64::interrupts::_define_interrupt_handler_asm!($args)
                 }

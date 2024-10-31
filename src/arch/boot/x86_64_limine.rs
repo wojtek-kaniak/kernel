@@ -1,4 +1,4 @@
-use core::mem::MaybeUninit;
+use core::{cell::SyncUnsafeCell, mem::MaybeUninit};
 
 use lazy_static::lazy_static;
 use limine::{
@@ -7,7 +7,7 @@ use limine::{
 };
 use spin::Mutex;
 
-use crate::{allocator::physical::MAX_MEMORY_REGION_COUNT, common::{sync::UnsafeSync, time::UnixEpochTime}, arch::{PhysicalAddress, VirtualAddress, devices::framebuffer::{ColorMode, CustomColorMode}}};
+use crate::{allocator::physical::MAX_MEMORY_REGION_COUNT, common::time::UnixEpochTime, arch::{PhysicalAddress, VirtualAddress, devices::framebuffer::{ColorMode, CustomColorMode}}};
 
 use super::{
     BootData, BootTerminalWriter, BootloaderInfo, FramebufferInfo, FramebufferList, MemoryMap,
@@ -184,13 +184,13 @@ fn load_kernel_address() -> (PhysicalAddress, VirtualAddress) {
     (addresses.physical_base.into(), addresses.virtual_base.into())
 }
 
-// TODO: remove UnsafeSync
+// TODO: remove SyncUnsafeCell
 lazy_static! {
-    static ref TERMINAL_RESPONSE: UnsafeSync<Option<&'static LimineTerminalResponse>> =
+    static ref TERMINAL_RESPONSE: SyncUnsafeCell<Option<&'static LimineTerminalResponse>> =
         TERMINAL_REQUEST.get_response().get().into();
 
     static ref TERMINAL: Mutex<Option<&'static LimineTerminal>> =
-        unsafe { TERMINAL_RESPONSE.get() }
+        unsafe { &*TERMINAL_RESPONSE.get() }
             .and_then(|x| x.terminals().and_then(|x| x.first()))
             .into();
 }
@@ -202,7 +202,7 @@ impl LimineTerminalWriter {
     fn write_str(str: &str) -> core::fmt::Result {
         use core::fmt::Error;
 
-        let writer = unsafe { TERMINAL_RESPONSE.get().ok_or(Error)?.write().ok_or(Error)? };
+        let writer = unsafe { &*TERMINAL_RESPONSE.get() }.ok_or(Error)?.write().ok_or(Error)?;
         let terminal_lock = TERMINAL.lock();
         writer(terminal_lock.ok_or(Error)?, str);
 

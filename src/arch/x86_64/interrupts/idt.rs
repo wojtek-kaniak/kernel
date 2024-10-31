@@ -1,34 +1,64 @@
 use core::{fmt::Debug, ops::{Index, IndexMut}};
 
-use static_assertions::const_assert_eq;
+use static_assertions::{const_assert, const_assert_eq};
 
-use crate::{common::macros::debug_assert_arg, arch::PrivilegeLevel};
+use crate::{arch::{PrivilegeLevel, SegmentSelector}, common::macros::assert_arg};
 
 use super::{InterruptHandler, Interrupt};
 
 #[repr(C)]
+#[derive(Debug, Clone)]
 pub struct Idt {
-    entries: [IdtEntry; 256]
+    entries: [IdtEntry; 256],
 }
 const_assert_eq!(core::mem::size_of::<Idt>(), 16 * 256);
+const_assert!(core::mem::size_of::<Idt>() <= u16::MAX as usize);
 
 impl Idt {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Idt {
-            entries: [IdtEntry::default(); 256]
+            entries: [IdtEntry::empty(); 256]
         }
     }
 
-    pub fn load(&'static self) {
-        crate::arch::intrinsics::load_idt(self);
+    /// # Safety
+    /// The referenced IDT must have the correct lifetime
+    /// (be valid until replaced).
+    pub unsafe fn load(idt: *const Idt) {
+        const_assert!(core::mem::size_of::<Idt>() <= u16::MAX as usize);
+
+        let reg = IdtRegister {
+            base: idt,
+            limit: core::mem::size_of::<Idt>() as u16,
+        };
+
+        unsafe {
+            crate::arch::intrinsics::load_idt(reg);
+        }
     }
 
-    pub fn register_handler<Handler: InterruptHandler>(&mut self) {
-        type RawHandler = extern "C" fn() -> !;
+    /// Registers a new interrupt handler and returns the previous if present
+    pub fn swap_handler<Handler: InterruptHandler>(&mut self, segment_descriptor: SegmentSelector) -> Option<IdtEntry> {
+        type RawHandler = unsafe extern "C" fn() -> !;
+
         let vector: IdtVector = Handler::Interrupt::VECTOR;
-        #[allow(deprecated)]
         let handler: RawHandler = Handler::invoke;
-        self[vector].set_offset(handler as usize);
+        
+        let old = self[vector];
+
+        self[vector] = IdtEntry::new(
+            handler as usize,
+            segment_descriptor,
+            IstIndex::UNUSED,
+            GateType::TRAP, // TODO:
+            PrivilegeLevel::USERSPACE,
+        );
+
+        if old.data.present() {
+            Some(old)
+        } else {
+            None
+        }
     }
 }
 
@@ -48,6 +78,7 @@ impl Index<IdtVector> for Idt {
     }
 }
 
+// Should this be unsafe?
 impl IndexMut<IdtVector> for Idt {
     fn index_mut(&mut self, index: IdtVector) -> &mut Self::Output {
         unsafe {
@@ -60,8 +91,8 @@ impl IndexMut<IdtVector> for Idt {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IdtEntry {
     offset_low: u16,
-    pub segment_selector: u16,
-    data: IdtEntryData,
+    pub segment: SegmentSelector,
+    pub data: IdtEntryData,
     offset_mid: u16,
     offset_high: u32,
     _reserved: u32,
@@ -69,16 +100,26 @@ pub struct IdtEntry {
 const_assert_eq!(core::mem::size_of::<IdtEntry>(), 16);
 
 impl IdtEntry {
-    pub fn new(offset: usize, segment_selector: u16, ist_index: u8, gate_type: GateType, dpl: PrivilegeLevel) -> Self {
-        debug_assert_arg!(ist_index, ist_index < 16, "ist_index must be less than 16");
+    pub fn new(offset: usize, segment: SegmentSelector, ist_index: IstIndex, gate_type: GateType, dpl: PrivilegeLevel) -> Self {
         let offset = offset as u64;
         Self {
             offset_low: offset as u16,
             offset_mid: (offset >> 16) as u16,
             offset_high: (offset >> 32) as u32,
-            segment_selector,
+            segment,
             data: IdtEntryData::new(ist_index, gate_type, dpl),
             _reserved: 0
+        }
+    }
+
+    pub const fn empty() -> Self {
+        Self {
+            offset_low: 0,
+            segment: SegmentSelector::null(),
+            data: IdtEntryData(0),
+            offset_mid: 0,
+            offset_high: 0,
+            _reserved: 0,
         }
     }
 
@@ -93,13 +134,23 @@ impl IdtEntry {
     }
 }
 
-#[repr(C)]
+
+/// IDT entry data
+///
+/// # Fields
+/// [0, 2]   - IST index - offset into the Interrupt Stack Table
+/// [3, 7]   - reserved
+/// [8, 11]  - Gate type (Interrupt / Trap)
+/// [12, 12] - must be 0
+/// [13, 14] - DPL - privilage level required to invoke this software interrupt
+/// [15, 15] - Present bit
+#[repr(transparent)]
 #[derive(Clone, Copy, Default)]
 pub struct IdtEntryData(u16);
 const_assert_eq!(core::mem::size_of::<IdtEntryData>(), 2);
 
 impl IdtEntryData {
-    pub fn new(ist_index: u8, gate_type: GateType, dpl: PrivilegeLevel) -> Self {
+    pub fn new(ist_index: IstIndex, gate_type: GateType, dpl: PrivilegeLevel) -> Self {
         let mut entry = IdtEntryData(0);
         entry.set_ist(ist_index);
         entry.set_gate_type(gate_type);
@@ -108,37 +159,37 @@ impl IdtEntryData {
         entry
     }
 
-    pub const fn invalid() -> Self {
+    pub const fn empty() -> Self {
         IdtEntryData(0)
     }
 
-    pub fn ist(self) -> u8 {
-        (self.0 as u8) & 0b111
+    pub fn ist(self) -> IstIndex {
+        IstIndex((self.0 as u8) & 0b111)
     }
 
-    pub fn set_ist(&mut self, value: u8) {
-        let ist = value as u16 & 0b111;
-        let mask = !(0b111_u16);
-        self.0 = (self.0 & mask) | ist;
+    pub fn set_ist(&mut self, value: IstIndex) {
+        const MASK: u16 = !0b111_u16;
+
+        self.0 = (self.0 & MASK) | value.0 as u16;
     }
 
     pub fn gate_type(self) -> GateType {
-        GateType::from((self.0 >> 8) as u8 & 0b1111)
+        GateType((self.0 >> 8) as u8 & 0b1111)
     }
 
     pub fn set_gate_type(&mut self, value: GateType) {
-        let value = Into::<u8>::into(value) as u16;
-        let mask = !(0b1111_u16 << 8);
-        self.0 = (self.0 & mask) | (value << 8);
+        const MASK: u16 = !(0b1111_u16 << 8);
+
+        let value = value.0 as u16;
+        self.0 = (self.0 & MASK) | (value << 8);
     }
 
     pub fn dpl(self) -> PrivilegeLevel {
-        PrivilegeLevel::from((self.0 >> 13) as u8 & 0b11)
+        PrivilegeLevel::new((self.0 >> 13) as u8 & 0b11)
     }
 
     pub fn set_dpl(&mut self, value: PrivilegeLevel) {
-        let value: u8 = value.into();
-        let value = value as u16;
+        let value = value.0 as u16;
         let mask = !(0b11_u16 << 13);
         self.0 = (self.0 & mask) | (value << 13);
     }
@@ -164,6 +215,21 @@ impl Debug for IdtEntryData {
     }
 }
 
+/// A 3 bit offset into the Interrupt Stack Table, unused if 0
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IstIndex(u8);
+
+impl IstIndex {
+    pub const UNUSED: Self = IstIndex(0);
+
+    /// Must be valid (3 bit)
+    pub fn new(value: u8) -> Self {
+        assert_arg!(value, value < 8);
+
+        IstIndex(value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GateType(u8);
 
@@ -178,54 +244,79 @@ impl GateType {
     }
 }
 
-impl From<u8> for GateType {
-    fn from(value: u8) -> Self {
-        GateType(value)
-    }
-}
-
 impl From<GateType> for u8 {
     fn from(val: GateType) -> Self {
         val.0
     }
 }
 
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdtRegister {
+    limit: u16,
+    base: *const Idt,
+}
+const_assert_eq!(core::mem::size_of::<IdtRegister>(), 10);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IdtVector(u8);
 
+macro_rules! define_idt_vectors {
+    (
+        $(
+            $(#[$attr:meta])*
+            $name:ident = $value:expr,
+        )*
+    ) => {
+        $(
+            $(
+                #[$attr]
+            )*
+            pub const $name: IdtVector = IdtVector($value);
+        )*
+    };
+}
+use define_idt_vectors;
+
 impl IdtVector {
-    pub const INTEGER_DIVIDE_BY_ZERO: IdtVector = IdtVector(0);
-    pub const DEBUG: IdtVector = IdtVector(1);
-    pub const NON_MASKABLE_INTERRUPT: IdtVector = IdtVector(2);
-    pub const BREAKPOINT: IdtVector = IdtVector(3);
-    pub const OVERFLOW: IdtVector = IdtVector(4);
-    pub const BOUND_RANGE_EXCEEDED: IdtVector = IdtVector(5);
-    pub const INVALID_OPCODE: IdtVector = IdtVector(6);
-    pub const DEVICE_NOT_AVAILABLE: IdtVector = IdtVector(7);
-    pub const DOUBLE_FAULT: IdtVector = IdtVector(8);
-    /// Unused
-    pub const COPROCESSOR_SEGMENT_OVERRUN: IdtVector = IdtVector(9);
-    pub const INVALID_TTS: IdtVector = IdtVector(10);
-    pub const SEGMENT_NOT_PRESENT: IdtVector = IdtVector(11);
-    pub const STACK_SEGMENT_FAULT: IdtVector = IdtVector(12);
-    pub const GENERAL_PROTECTION: IdtVector = IdtVector(13);
-    pub const PAGE_FAULT: IdtVector = IdtVector(14);
-    pub const X87_FLOATING_POINT_ERROR: IdtVector = IdtVector(16);
-    pub const ALIGNMENT_CHECK: IdtVector = IdtVector(17);
-    pub const MACHINE_CHECK: IdtVector = IdtVector(18);
-    pub const SIMD_FLOATING_POINT_EXCEPTION: IdtVector = IdtVector(19);
+    define_idt_vectors! {
+        INTEGER_DIVIDE_BY_ZERO = 0,
+        DEBUG = 1,
+        NON_MASKABLE_INTERRUPT = 2,
+        BREAKPOINT = 3,
+        OVERFLOW = 4,
+        BOUND_RANGE_EXCEEDED = 5,
+        INVALID_OPCODE = 6,
+        DEVICE_NOT_AVAILABLE = 7,
+        DOUBLE_FAULT = 8,
 
-    /// Intel specific
-    pub const VIRTUALIZATION_EXCEPTION: IdtVector = IdtVector(20);
+        /// Unused
+        COPROCESSOR_SEGMENT_OVERRUN = 9,
 
-    pub const CONTROL_PROTECTION_EXCEPTION: IdtVector = IdtVector(21);
+        INVALID_TTS = 10,
+        SEGMENT_NOT_PRESENT = 11,
+        STACK_SEGMENT_FAULT = 12,
+        GENERAL_PROTECTION = 13,
+        PAGE_FAULT = 14,
+        X87_FLOATING_POINT_ERROR = 16,
+        ALIGNMENT_CHECK = 17,
+        MACHINE_CHECK = 18,
+        SIMD_FLOATING_POINT_EXCEPTION = 19,
 
-    /// AMD specific
-    pub const HYPERVISOR_INJECTION_EXCEPTION: IdtVector = IdtVector(28);
-    /// AMD specific
-    pub const VMM_COMMUNICATION_EXCEPTION: IdtVector = IdtVector(29);
-    /// AMD specific
-    pub const SECURITY_EXCEPTION: IdtVector = IdtVector(30);
+        /// Intel specific
+        VIRTUALIZATION_EXCEPTION = 20,
+
+        CONTROL_PROTECTION_EXCEPTION = 21,
+
+        /// AMD specific
+        HYPERVISOR_INJECTION_EXCEPTION = 28,
+
+        /// AMD specific
+        VMM_COMMUNICATION_EXCEPTION = 29,
+
+        /// AMD specific
+        SECURITY_EXCEPTION = 30,
+    }
 
     /// [0:32) - predefined interrupts \
     /// [32: 255] - software / maskable external interrupts

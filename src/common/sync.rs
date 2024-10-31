@@ -57,7 +57,8 @@ impl<T> InitOnce<T> {
         unsafe { self.get_unchecked() }
     }
 
-    /// SAFETY: must be initialized
+    /// # Safety
+    /// must be initialized
     pub unsafe fn get_unchecked(&self) -> &T {
         // SAFETY: only immutable references may exist after initialization
 
@@ -155,14 +156,18 @@ impl<T> InitOnce<T> {
 pub struct UnsafeSync<T>(UnsafeCell<T>);
 
 impl<T> UnsafeSync<T> {
-    pub unsafe fn new(value: T) -> Self {
+    pub fn new(value: T) -> Self {
         UnsafeSync(UnsafeCell::from(value))
     }
 
+    /// # Safety
+    /// Mutable references cannot exist
     pub unsafe fn get(&self) -> &T {
         unsafe { self.0.get().as_ref().unwrap_unchecked() }
     }
 
+    /// # Safety
+    /// No references may not exist
     pub unsafe fn get_mut(&mut self) -> &mut T {
         self.0.get_mut()
     }
@@ -182,8 +187,6 @@ unsafe impl<T> Send for UnsafeSync<T> {}
 
 impl<T> From<T> for UnsafeSync<T> {
     fn from(value: T) -> Self {
-        unsafe {
-            Self::new(value)
-        }
+        Self::new(value)
     }
 }

@@ -39,8 +39,8 @@ pub struct RawFramebuffer {
 impl RawFramebuffer {
     pub const ARGB32_ONLY: bool = true;
 
-    /// Safety:
-    /// The framebuffer info and lifetime must be valid
+    /// # Safety
+    /// The framebuffer must be valid
     pub unsafe fn new(info: FramebufferInfo) -> Result<Self, ()> {
         if info.color_mode == ColorMode::Rgb && info.bpp == 32 {
             Ok(Self { info })
@@ -58,6 +58,8 @@ impl RawFramebuffer {
         }
     }
 
+    /// # Safety
+    /// The pixel must be in bounds
     pub unsafe fn write_pixel_raw_unchecked(&self, pixel: Pixel, value: u32) {
         unsafe {
             // Assumes 4 byte aligned pixels
@@ -73,6 +75,8 @@ impl RawFramebuffer {
         self.write_pixel_raw(pixel, value.into_argb32())
     }
 
+    /// # Safety
+    /// The pixel must be in bounds
     pub unsafe fn write_pixel_rgb_unchecked(&self, pixel: Pixel, value: Rgb) {
         unsafe {
             // Assumes RGB(A) format
@@ -80,7 +84,6 @@ impl RawFramebuffer {
         }
     }
 
-    /// Warning: no double buffering
     pub fn read_pixel_raw(&self, pixel: Pixel) -> u32 {
         assert_arg!(pixel, pixel.x < self.info.width);
         assert_arg!(pixel, pixel.y < self.info.height);
@@ -90,7 +93,8 @@ impl RawFramebuffer {
         }
     }
 
-    /// Warning: no double buffering
+    /// # Safety
+    /// The pixel must be in bounds
     pub unsafe fn read_pixel_raw_unchecked(&self, pixel: Pixel) -> u32 {
         unsafe {
             let offset = pixel.y * self.info.stride + pixel.x * core::mem::size_of::<u32>();

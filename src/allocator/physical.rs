@@ -22,7 +22,9 @@ pub fn global_allocator(#[allow(unused_variables)] token: FrameAllocatorToken) -
     unsafe { ALLOCATOR.get_unchecked() }
 }
 
-/// This function may only be called once, all subsequent calls will panic or be ignored \
+/// This function may only be called once, all subsequent calls will panic or be ignored
+/// 
+/// # Safety
 /// All `MemoryMapEntryKind::Usable` entries in `memory_map` must be valid and unused
 pub unsafe fn initialize(memory_map: boot::MemoryMap, identity_map_token: IdentityMapToken) -> FrameAllocatorToken {
     // best effort panic
@@ -105,8 +107,10 @@ impl MemoryRegion {
 
     // TODO: refactor
     /// `base` and `size` must be `FRAME_SIZE` aligned \
-    /// `size` must be greater than `FRAME_SIZE` \
-    /// Memory in range [`base`; `base + size`) must be valid and unused
+    /// `size` must be greater than `FRAME_SIZE`
+    /// 
+    /// # Safety
+    /// Memory in range [`base`, `base + size`) must be valid and unused
     pub unsafe fn new(base: PhysicalAddress, size: usize, identity_map_token: IdentityMapToken) -> Self {
         assert_arg!(base, base % FRAME_SIZE == 0, "Must be FRAME_SIZE aligned.");
         assert_arg!(size, size % FRAME_SIZE == 0, "Must be FRAME_SIZE aligned.");

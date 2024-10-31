@@ -1,3 +1,5 @@
+// TODO: remove and replace with specific traits
+/// # Safety
 /// Every bit pattern is valid for the marked type
 pub unsafe trait Bittable {}
 
